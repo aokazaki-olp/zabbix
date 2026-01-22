@@ -1,289 +1,303 @@
 /**
- * Template renderer (V8 / GAS)
- * string literal supports " and '
- */
+ * Template renderer (V8 / GAS)
+ * string literal supports " and '
+ */
 class Template {
-  /* =========================
-   * Static facade
-   * ========================= */
-  static render(template, data, filters) {
-    return new Template(template, filters).render(data);
-  }
+  /* =========================
+   * Static facade
+   * ========================= */
+  static render(template, data, filters) {
+    return new Template(template, filters).render(data);
+  }
 
-  /* =========================
-   * Constructor
-   * ========================= */
-  constructor(template, filters = {}) {
-    this.template = template;
-    this.cache = new Map();
-    this.parts = this.parse(template);
+  /* =========================
+   * Constructor
+   * ========================= */
+  constructor(template, filters = {}) {
+    this.template = template;
+    this.cache = new Map();
+    this.parts = this.parse(template);
 
-    // primitive filters (always available)
-    this.filters = {
-      string(v) {
-        return v == null ? "" : String(v);
-      },
+    // primitive filters (always available)
+    this.filters = {
+      string(v) {
+        return v == null ? "" : String(v);
+      },
 
-      number(v) {
-        if (typeof v !== "number") return v;
-        return v.toLocaleString("en-US");
-      },
+      number(v) {
+        if (typeof v !== "number") return v;
+        return v.toLocaleString("en-US");
+      },
 
-      json(v) {
-        try {
-          return JSON.stringify(v);
-        } catch {
-          return "";
-        }
-      },
+      json(v) {
+        try {
+          return JSON.stringify(v);
+        } catch {
+          return "";
+        }
+      },
 
-      // user / common filters
-      ...filters,
-    };
-  }
+      // user / common filters
+      ...filters,
+    };
+  }
 
-  /* =========================
-   * Register filter (instance)
-   * ========================= */
-  registerFilter(name, fn) {
-    if (
-      typeof name !== "string" ||
-      !name ||
-      typeof fn !== "function"
-    ) {
-      return;
-    }
-    this.filters[name] = fn;
-  }
+  /* =========================
+   * Register filter (instance)
+   * ========================= */
+  registerFilter(name, fn) {
+    if (
+      typeof name !== "string" ||
+      !name ||
+      typeof fn !== "function"
+    ) {
+      return;
+    }
+    this.filters[name] = fn;
+  }
 
-  /* =========================
-   * Patterns
-   * ========================= */
-  static placeholderPattern = /(\\*)\{\{\{([\s\S]*?)\}\}\}/g;
+  /* =========================
+   * Patterns
+   * ========================= */
+  static placeholderPattern = /(\\*)\{\{\{([\s\S]*?)\}\}\}/g;
 
-  // "string" | 'string' | || | | | any char
-  static operatorOrTokenPattern =
-    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\|\||\||[\s\S]/g;
+  // "string" | 'string' | || | | | any char
+  static operatorOrTokenPattern =
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\|\||\||[\s\S]/g;
 
-  // identifier | ["string"] | ['string'] | [number]
-  static keySegmentPattern =
-    /(?:^|\.)([^\s.\[\]]+)|\[\s*(("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|-?(?:0|[1-9]\d*)(?:\.\d+)?)\s*)\]/g;
+  // identifier | ["string"] | ['string'] | [number]
+  static keySegmentPattern =
+    /(?:^|\.)([^\s.\[\]]+)|\[\s*(("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|-?(?:0|[1-9]\d*)(?:\.\d+)?)\s*)\]/g;
 
-  static numberLiteralPattern =
-    /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+  static numberLiteralPattern =
+    /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-  /* =========================
-   * Parse template
-   * ========================= */
-  parse(template) {
-    const parts = [];
-    let last = 0;
+  /* =========================
+   * Normalize (for cache key)
+   * ========================= */
+  normalizeExpression(expr) {
+    return expr
+      .trim()
+      .replace(/\s+/g, " ");
+  }
 
-    for (const m of template.matchAll(Template.placeholderPattern)) {
-      if (m.index > last) {
-        parts.push({ type: "text", value: template.slice(last, m.index) });
-      }
-      parts.push({
-        type: "placeholder",
-        backslashes: m[1],
-        expression: m[2].trim(),
-      });
-      last = m.index + m[0].length;
-    }
+  /* =========================
+   * Parse template
+   * ========================= */
+  parse(template) {
+    const parts = [];
+    let last = 0;
 
-    if (last < template.length) {
-      parts.push({ type: "text", value: template.slice(last) });
-    }
+    for (const m of template.matchAll(Template.placeholderPattern)) {
+      if (m.index > last) {
+        parts.push({ type: "text", value: template.slice(last, m.index) });
+      }
+      parts.push({
+        type: "placeholder",
+        backslashes: m[1],
+        expression: m[2].trim(),
+      });
+      last = m.index + m[0].length;
+    }
 
-    return parts;
-  }
+    if (last < template.length) {
+      parts.push({ type: "text", value: template.slice(last) });
+    }
 
-  /* =========================
-   * Compile (cached)
-   * ========================= */
-  compile(expression) {
-    if (this.cache.has(expression)) return this.cache.get(expression);
-    const fn = this.buildExpression(expression);
-    this.cache.set(expression, fn);
-    return fn;
-  }
+    return parts;
+  }
 
-  /* =========================
-   * Helpers
-   * ========================= */
-  parseStringLiteral(token) {
-    if (token.startsWith('"')) {
-      try {
-        return JSON.parse(token);
-      } catch {
-        return undefined;
-      }
-    }
+  /* =========================
+   * Compile (cached, minified)
+   * ========================= */
+  compile(expression) {
+    const key = this.normalizeExpression(expression);
 
-    if (token.startsWith("'")) {
-      const inner = token.slice(1, -1);
-      const json = `"${inner
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"')}"`;
+    if (this.cache.has(key)) {
+      return this.cache.get(key);
+    }
 
-      try {
-        return JSON.parse(json);
-      } catch {
-        return undefined;
-      }
-    }
+    const fn = this.buildExpression(expression);
+    this.cache.set(key, fn);
+    return fn;
+  }
 
-    return undefined;
-  }
+  /* =========================
+   * Helpers
+   * ========================= */
+  parseStringLiteral(token) {
+    if (token.startsWith('"')) {
+      try {
+        return JSON.parse(token);
+      } catch {
+        return undefined;
+      }
+    }
 
-  applyFilters(value, filterNames) {
-    let v = value;
-    for (const f of filterNames) {
-      const fn = this.filters[f];
-      if (typeof fn === "function") {
-        v = fn(v);
-      }
-    }
-    return v;
-  }
+    if (token.startsWith("'")) {
+      const inner = token.slice(1, -1);
+      const json = `"${inner
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')}"`;
 
-  /* =========================
-   * Build expression
-   * ========================= */
-  buildExpression(expression) {
-    /* ---- split by || ---- */
-    const terms = [];
-    let buffer = "";
+      try {
+        return JSON.parse(json);
+      } catch {
+        return undefined;
+      }
+    }
 
-    for (const m of expression.matchAll(
-      Template.operatorOrTokenPattern
-    )) {
-      const t = m[0];
-      if (t === "||") {
-        const s = buffer.trim();
-        if (s) terms.push(s);
-        buffer = "";
-      } else {
-        buffer += t;
-      }
-    }
-    {
-      const s = buffer.trim();
-      if (s) terms.push(s);
-    }
+    return undefined;
+  }
 
-    /* ---- compile terms ---- */
-    const compiled = terms.map((rawTerm) => {
-      /* ---- split by | (filters) ---- */
-      const segments = rawTerm.split("|").map(s => s.trim());
-      const term = segments.shift();
-      const filters = segments;
+  applyFilters(value, filterNames) {
+    let v = value;
+    for (const f of filterNames) {
+      const fn = this.filters[f];
+      if (typeof fn === "function") {
+        v = fn(v);
+      }
+    }
+    return v;
+  }
 
-      /* number literal */
-      if (Template.numberLiteralPattern.test(term)) {
-        const n = Number(term);
-        return () => this.applyFilters(n, filters);
-      }
+  /* =========================
+   * Build expression
+   * ========================= */
+  buildExpression(expression) {
+    /* ---- split by || ---- */
+    const terms = [];
+    let buffer = "";
 
-      /* string literal */
-      if (term.startsWith('"') || term.startsWith("'")) {
-        const v = this.parseStringLiteral(term);
-        return () => this.applyFilters(v, filters);
-      }
+    for (const m of expression.matchAll(
+      Template.operatorOrTokenPattern
+    )) {
+      const t = m[0];
+      if (t === "||") {
+        const s = buffer.trim();
+        if (s) terms.push(s);
+        buffer = "";
+      } else {
+        buffer += t;
+      }
+    }
+    {
+      const s = buffer.trim();
+      if (s) terms.push(s);
+    }
 
-      /* key reference */
-      const path = [];
-      let valid = true;
+    /* ---- compile terms ---- */
+    const compiled = terms.map((rawTerm) => {
+      /* ---- split by | (filters) ---- */
+      const segments = rawTerm.split("|").map(s => s.trim());
+      const term = segments.shift();
+      const filters = segments;
 
-      for (const m of term.matchAll(Template.keySegmentPattern)) {
-        const identifier = m[1];
-        const bracket = m[2];
+      /* number literal */
+      if (Template.numberLiteralPattern.test(term)) {
+        const n = Number(term);
+        return () => this.applyFilters(n, filters);
+      }
 
-        if (identifier) {
-          path.push(identifier);
-        } else {
-          let key;
-          if (bracket.startsWith('"') || bracket.startsWith("'")) {
-            key = this.parseStringLiteral(bracket);
-          } else {
-            key = Number(bracket);
-          }
+      /* string literal */
+      if (term.startsWith('"') || term.startsWith("'")) {
+        const v = this.parseStringLiteral(term);
+        return () => this.applyFilters(v, filters);
+      }
 
-          if (key === undefined) {
-            valid = false;
-            break;
-          }
+      /* key reference */
+      const path = [];
+      let valid = true;
 
-          path.push(key);
-        }
-      }
+      for (const m of term.matchAll(Template.keySegmentPattern)) {
+        const identifier = m[1];
+        const bracket = m[2];
 
-      if (valid) {
-        const rest = term
-          .replace(Template.keySegmentPattern, "")
-          .replace(/[.\s]/g, "");
-        if (rest.length !== 0) valid = false;
-      }
+        if (identifier) {
+          path.push(identifier);
+        } else {
+          let key;
+          if (bracket.startsWith('"') || bracket.startsWith("'")) {
+            key = this.parseStringLiteral(bracket);
+          } else {
+            key = Number(bracket);
+          }
 
-      if (!valid || path.length === 0) {
-        return () => undefined;
-      }
+          if (key === undefined) {
+            valid = false;
+            break;
+          }
 
-      return (data) => {
-        let acc = data;
-        for (const key of path) {
-          if (acc == null) return undefined;
+          path.push(key);
+        }
+      }
 
-          const t = typeof acc;
-          if (t !== "object" && t !== "function") {
-            return undefined;
-          }
+      if (valid) {
+        const rest = term
+          .replace(Template.keySegmentPattern, "")
+          .replace(/[.\s]/g, "");
+        if (rest.length !== 0) valid = false;
+      }
 
-          const v = acc[key];
-          if (v === undefined) return undefined;
-          acc = v;
-        }
+      if (!valid || path.length === 0) {
+        return () => undefined;
+      }
 
-        return this.applyFilters(acc, filters);
-      };
-    });
+      return (data) => {
+        let acc = data;
+        for (const key of path) {
+          if (acc == null) return undefined;
 
-    /* ---- fallback evaluation ---- */
-    return (data) => {
-      for (const fn of compiled) {
-        const v = fn(data);
+          const t = typeof acc;
+          if (t !== "object" && t !== "function") {
+            return undefined;
+          }
 
-        if (v === undefined || v === null || v === "") {
-          continue;
-        }
+          const v = acc[key];
+          if (v === undefined) return undefined;
+          acc = v;
+        }
 
-        return v;
-      }
-      return "";
-    };
-  }
+        return this.applyFilters(acc, filters);
+      };
+    });
 
-  /* =========================
-   * Render
-   * ========================= */
-  render(data) {
-    let out = "";
+    /* ---- fallback evaluation ---- */
+    return (data) => {
+      for (const fn of compiled) {
+        const v = fn(data);
 
-    for (const p of this.parts) {
-      if (p.type === "text") {
-        out += p.value;
-        continue;
-      }
+        if (v === undefined || v === null || v === "") {
+          continue;
+        }
 
-      if (p.backslashes.length % 2 === 1) {
-        out += p.backslashes.slice(1) + "{{{" + p.expression + "}}}";
-      } else {
-        out +=
-          p.backslashes +
-          String(this.compile(p.expression)(data));
-      }
-    }
+        return v;
+      }
+      return "";
+    };
+  }
 
-    return out;
-  }
+  /* =========================
+   * Render
+   * ========================= */
+  render(data) {
+    let out = "";
+
+    for (const p of this.parts) {
+      if (p.type === "text") {
+        out += p.value;
+        continue;
+      }
+
+      if (p.backslashes.length % 2 === 1) {
+        out += p.backslashes.slice(1) + "{{{" + p.expression + "}}}";
+      } else {
+        out +=
+          p.backslashes +
+          String(this.compile(p.expression)(data));
+      }
+    }
+
+    return out;
+  }
 }
