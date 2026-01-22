@@ -11,6 +11,39 @@ class Template {
   }
 
   /* =========================
+   * Built-in & user filters
+   * ========================= */
+  static filters = {
+    number(v) {
+      if (typeof v !== "number") return v;
+      return v.toLocaleString("en-US");
+    },
+
+    json(v) {
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return "";
+      }
+    },
+
+    string(v) {
+      return v == null ? "" : String(v);
+    },
+  };
+
+  static registerFilter(name, fn) {
+    if (
+      typeof name !== "string" ||
+      !name ||
+      typeof fn !== "function"
+    ) {
+      return;
+    }
+    this.filters[name] = fn;
+  }
+
+  /* =========================
    * Constructor
    * ========================= */
   constructor(template) {
@@ -24,9 +57,9 @@ class Template {
    * ========================= */
   static placeholderPattern = /(\\*)\{\{\{([\s\S]*?)\}\}\}/g;
 
-  // "string" | 'string' | || | any char
+  // "string" | 'string' | || | | | any char
   static operatorOrTokenPattern =
-    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\|\||[\s\S]/g;
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\|\||\||[\s\S]/g;
 
   // identifier | ["string"] | ['string'] | [number]
   static keySegmentPattern =
@@ -75,7 +108,6 @@ class Template {
    * Helpers
    * ========================= */
   parseStringLiteral(token) {
-    // "..."
     if (token.startsWith('"')) {
       try {
         return JSON.parse(token);
@@ -84,7 +116,6 @@ class Template {
       }
     }
 
-    // '...' → convert to JSON string
     if (token.startsWith("'")) {
       const inner = token.slice(1, -1);
       const json = `"${inner
@@ -127,7 +158,12 @@ class Template {
     }
 
     /* ---- compile terms ---- */
-    const compiled = terms.map((term) => {
+    const compiled = terms.map((rawTerm) => {
+      /* ---- split by | (filters) ---- */
+      const segments = rawTerm.split("|").map(s => s.trim());
+      const term = segments.shift();
+      const filters = segments;
+
       /* number literal */
       if (Template.numberLiteralPattern.test(term)) {
         const n = Number(term);
@@ -192,7 +228,17 @@ class Template {
           if (v === undefined) return undefined;
           acc = v;
         }
-        return acc;
+
+        let value = acc;
+
+        for (const f of filters) {
+          const fn = Template.filters[f];
+          if (typeof fn === "function") {
+            value = fn(value);
+          }
+        }
+
+        return value;
       };
     });
 
