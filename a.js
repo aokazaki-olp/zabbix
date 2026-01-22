@@ -20,6 +20,7 @@ class Template {
 
     // primitive filters (always available)
     this.filters = {
+      /* ---------- base ---------- */
       string(v) {
         return v == null ? "" : String(v);
       },
@@ -29,9 +30,83 @@ class Template {
         return v.toLocaleString("en-US");
       },
 
+      /* ---------- boolean ---------- */
+      boolean(v) {
+        return Boolean(v);
+      },
+
+      /* ---------- number ---------- */
+      int(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.trunc(n) : v;
+      },
+
+      float(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : v;
+      },
+
+      abs(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.abs(n) : v;
+      },
+
+      ceil(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.ceil(n) : v;
+      },
+
+      floor(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.floor(n) : v;
+      },
+
+      round(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.round(n) : v;
+      },
+
+      negate(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? -n : v;
+      },
+
+      /* ---------- string ---------- */
+      trim(v) {
+        return typeof v === "string" ? v.trim() : v;
+      },
+
+      lower(v) {
+        return typeof v === "string" ? v.toLowerCase() : v;
+      },
+
+      upper(v) {
+        return typeof v === "string" ? v.toUpperCase() : v;
+      },
+
+      length(v) {
+        if (typeof v === "string" || Array.isArray(v)) {
+          return v.length;
+        }
+        return 0;
+      },
+
+      default(v) {
+        return v == null ? "" : v;
+      },
+
+      /* ---------- json ---------- */
       json(v) {
         try {
           return JSON.stringify(v);
+        } catch {
+          return "{}";
+        }
+      },
+
+      jsonPretty(v) {
+        try {
+          return JSON.stringify(v, null, 2);
         } catch {
           return "{}";
         }
@@ -108,7 +183,7 @@ class Template {
   }
 
   /* =========================
-   * Compile (cached, minified)
+   * Compile (cached)
    * ========================= */
   compile(expression) {
     const key = this.normalizeExpression(expression);
