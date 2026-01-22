@@ -33,7 +33,7 @@ class Template {
         try {
           return JSON.stringify(v);
         } catch {
-          return "";
+          return "{}";
         }
       },
 
@@ -162,6 +162,33 @@ class Template {
   }
 
   /* =========================
+   * Safe split for filters
+   * ========================= */
+  splitByFilter(rawTerm) {
+    const segments = [];
+    let buffer = "";
+
+    for (const m of rawTerm.matchAll(
+      Template.operatorOrTokenPattern
+    )) {
+      const t = m[0];
+
+      if (t === "|") {
+        segments.push(buffer.trim());
+        buffer = "";
+      } else {
+        buffer += t;
+      }
+    }
+
+    if (buffer.trim()) {
+      segments.push(buffer.trim());
+    }
+
+    return segments;
+  }
+
+  /* =========================
    * Build expression
    * ========================= */
   buildExpression(expression) {
@@ -189,7 +216,7 @@ class Template {
     /* ---- compile terms ---- */
     const compiled = terms.map((rawTerm) => {
       /* ---- split by | (filters) ---- */
-      const segments = rawTerm.split("|").map(s => s.trim());
+      const segments = this.splitByFilter(rawTerm);
       const term = segments.shift();
       const filters = segments;
 
