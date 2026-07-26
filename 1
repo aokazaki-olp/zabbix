@@ -1,0 +1,207 @@
+# AI × Tailwind CSS 静的サイト制作 ベストプラクティス(一例)
+
+構成: **Astro v6 + Tailwind CSS v4**(2026年7月時点の現行バージョン。AI生成との相性・保守性のバランスが良い組み合わせ)
+
+> ⚠️ Tailwind v4は現在も活発に更新されており、マイナーバージョンで破壊的変更が入ることがあるため、`package.json`でバージョンをpinしておくことを推奨します。
+
+---
+
+## 1. リポジトリ構成
+
+```
+my-site/
+├── AGENTS.md                  # ← AIエージェントへの制作ルール(最重要)
+├── README.md
+├── astro.config.mjs
+├── package.json
+├── tsconfig.json
+├── .stylelintrc.json          # インラインstyle/生の色値を機械的に禁止
+├── .eslintrc.json             # arbitrary値の使用を禁止
+├── public/
+│   └── images/
+└── src/
+    ├── styles/
+    │   ├── global.css         # @theme でトークン定義(ここが"テーマ"の実体)
+    │   └── components.css     # @apply でパーツ化(ここが"テンプレ"の実体)
+    ├── layouts/
+    │   └── BaseLayout.astro   # 共通<head>・OGP・全体骨格
+    ├── components/
+    │   ├── Header.astro
+    │   ├── Footer.astro
+    │   ├── Card.astro
+    │   ├── Button.astro
+    │   └── Section.astro
+    └── pages/
+        ├── index.astro
+        ├── about.astro
+        └── contact.astro
+```
+
+---
+
+## 2. Astroの設定 — `astro.config.mjs`
+
+Tailwind v4では`@astrojs/tailwind`統合(v3向け)は非推奨。公式のViteプラグイン`@tailwindcss/vite`を直接使う。
+
+```bash
+npm install tailwindcss @tailwindcss/vite
+# または astro add tailwind で自動セットアップ
+```
+
+```js
+// astro.config.mjs
+import { defineConfig } from 'astro/config';
+import tailwindcss from '@tailwindcss/vite';
+
+export default defineConfig({
+  vite: {
+    plugins: [tailwindcss()],
+  },
+});
+```
+
+`global.css`は`src/layouts/BaseLayout.astro`など、1箇所でだけ読み込めばサイト全体に反映される。
+
+## 3. テーマ(デザイントークン) — `src/styles/global.css`
+
+```css
+@import "tailwindcss";
+
+@theme {
+  /* 標準パレットを封印し、意味トークンだけ公開する */
+  --color-*: initial;
+
+  --color-bg: #ffffff;
+  --color-surface: #f5f5f7;
+  --color-text: #1a1a1a;
+  --color-text-muted: #6b6b6b;
+  --color-primary: #7c5cff;
+  --color-primary-hover: #6a4ce0;
+  --color-border: #e5e5e5;
+
+  --font-display: "Fraunces", serif;
+  --font-body: "Inter", sans-serif;
+
+  --radius-card: 0.75rem;
+}
+
+[data-theme="dark"] {
+  --color-bg: #111111;
+  --color-surface: #1c1c1e;
+  --color-text: #f2f2f2;
+  --color-text-muted: #a0a0a0;
+  --color-border: #2a2a2a;
+}
+```
+
+## 4. テンプレ(コンポーネントクラス) — `src/styles/components.css`
+
+```css
+.card {
+  @apply bg-surface rounded-[--radius-card] p-6 border border-border;
+}
+.btn-primary {
+  @apply bg-primary hover:bg-primary-hover text-white rounded-md px-4 py-2 transition-colors;
+}
+.section {
+  @apply max-w-5xl mx-auto px-6 py-16;
+}
+```
+
+Astroの`.astro`コンポーネント(`Card.astro`など)でこのクラスを使い回す。AIに新規ページを作らせるときも「既存の`Card`/`Section`コンポーネントを使って」と指示すれば、インラインで組み直されにくくなる。
+
+---
+
+## 5. AIエージェント向けルールファイル — `AGENTS.md`
+
+AI(Claude Code等)がリポジトリを開いたときに最初に読む前提のファイル。ここに「守らせたいこと」を明文化する。
+
+```markdown
+# このリポジトリでの制作ルール
+
+- 色・フォント・余白は必ず `src/styles/global.css` のトークン
+  (`bg-primary` 等)経由で使う。生の値(`bg-blue-500`、`text-[#123456]`)は禁止。
+- style属性でのインラインスタイルは禁止。
+- 繰り返し構造(カード・ボタン・セクション)は `src/components/` の
+  既存コンポーネントを再利用する。新規に似た構造を作る前に既存を確認する。
+- 新しいトークンが必要な場合は `global.css` に追加してから使う
+  (ページ側で値を決め打ちしない)。
+- クラスの並び順は Prettier (`prettier-plugin-tailwindcss`) に従う。
+```
+
+こうしておくと、Claude Codeのようなツールを使う場合は自動的にこのファイルを踏まえて生成するようになる。
+
+---
+
+## 6. 機械的なガードレール(lintで強制)
+
+```jsonc
+// .stylelintrc.json (抜粋)
+{
+  "rules": {
+    "declaration-property-value-disallowed-list": {
+      "/^background|color$/": ["/^#/", "/^rgb/"]
+    }
+  }
+}
+```
+
+```jsonc
+// package.json 内 lint-staged 等でhtml/astro内の style="" を検出
+"scripts": {
+  "lint:no-inline-style": "grep -rn 'style=\"' src/ && exit 1 || exit 0"
+}
+```
+
+`npm run build` の前段でこれらを走らせ、CIで弾く。「AIが指示を守るかどうか」に依存せず、外れたら機械的に落ちる状態にするのがポイント。
+
+---
+
+---
+
+## 7. ビジュアルリグレッションテスト(TDD相当のガードレール)
+
+lintが「コードレベルの逸脱」を機械的に弾く仕組みなら、これは「見た目レベルの逸脱」を機械的に弾く仕組み。TDDのように"先にテストを書く"のではなく、"先に正解のスクリーンショット(baseline)を確定し、差分で崩れを検知する"という形になる。
+
+| TDD(ロジック) | ビジュアルリグレッションテスト(見た目) |
+|---|---|
+| 期待する出力をテストコードで先に定義 | 期待する見た目をスクリーンショットで先に確定(baseline) |
+| コード変更後にテスト実行→Red/Green | ビルド後に差分キャプチャ→Pass/Fail |
+| アサーションで検証 | ピクセル差分(閾値付き)で検証 |
+| 失敗したらコードを直す | 差分が「意図した変更」か「崩れ」かを人が判定してbaseline更新 |
+
+**ツール例(Playwrightの場合)**
+
+```ts
+// tests/visual.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('トップページの見た目が崩れていない', async ({ page }) => {
+  await page.goto('/');
+  await expect(page).toHaveScreenshot('index.png');
+});
+```
+
+```bash
+npx playwright test --update-snapshots   # baseline確定・更新
+npx playwright test                       # 差分チェック(CIで実行)
+```
+
+**運用の流れ**
+
+1. AIにページ生成させる前に、主要ページ(5〜10ページ程度)のスクショをbaselineとして確定
+2. AIに修正・追加をさせた後、CIで`npm run test:visual`を実行し差分を検出
+3. 意図した変更ならbaseline更新、意図しない崩れ(余白ズレ・色変化など)ならAIに差し戻し
+
+コンポーネント単位で厳密にやりたい場合はStorybook + Chromaticの組み合わせが定番だが、ページ単位でまず崩れを検知したいだけならPlaywrightの`toHaveScreenshot`から始めるのが手軽。
+
+---
+
+## 8. 開発フロー
+
+1. `AGENTS.md` を用意した状態でAIにページ生成を依頼
+2. 生成後 `npm run lint` でインライン/生値の混入をチェック
+3. 混入があれば「トークン化して」と再依頼、または自分でトークンに寄せる
+4. 新しいUIパターンが繰り返し出てきたら都度 `components.css` / `src/components/` に昇格
+
+この一式(トークンファイル・コンポーネントクラス・AGENTS.md・lint・ビジュアルリグレッションテスト)が揃っていれば、AIに複数回・複数セッションでページを作らせても「昔ながらのテーマ/テンプレ運用」と同等以上の一貫性が機械的に保たれます。
